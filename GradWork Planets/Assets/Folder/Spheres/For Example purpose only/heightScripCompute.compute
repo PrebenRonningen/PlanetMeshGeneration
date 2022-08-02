@@ -1,0 +1,41 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+StructuredBuffer<float3> vertices;
+RWStructuredBuffer<float3> heights;
+StructuredBuffer<float2> uvs;
+
+Texture2D<float4> heightMap;
+
+float heightIntensity;
+float radius;
+bool useHeightMap;
+
+uint numVertices;
+
+[numthreads(512, 1, 1)]
+void CSMain (uint id : SV_DispatchThreadID)
+{
+    if (id > numVertices)
+        return;
+
+    const float3 normalizedPosition = normalize(vertices[id]);
+	const float3 vertexPos = normalizedPosition * radius;
+
+	// --- HeightMap Calculations --- //
+	uint2 dim = (uint2)0;
+	heightMap.GetDimensions(dim.x, dim.y);
+
+	const float2 uv = float2((uvs[id].x * dim.x) % dim.x, (uvs[id].y * dim.y) % dim.y);
+
+	const float h1 = heightMap[uv].r;
+	const float minh = -1.1034;
+	const float maxh = 0.8849; 
+	const float result = minh + (maxh - minh) * h1;
+
+	const float3 height = normalizedPosition * h1 * heightIntensity * int(useHeightMap);
+	// --- HeightMap Calculations --- //
+	heights[id] = vertexPos +height;
+}

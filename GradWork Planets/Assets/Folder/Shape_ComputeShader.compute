@@ -1,0 +1,251 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#include "Noise.cginc"
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+
+StructuredBuffer<float3> vertices;
+RWStructuredBuffer<float3> heights;
+StructuredBuffer<float2> uvs;
+
+Texture2D<float4> heightMap;
+RWStructuredBuffer<float> minMax;
+
+bool useHeightMap;
+bool useNoise;
+
+uint numVertices;
+float heightIntensity;
+float radius;
+float sphere;
+float lerpSpread;
+
+bool isCube;
+float cubeSeg;
+
+float waterLevel;
+
+RWStructuredBuffer<int> noiseLayerType;
+
+struct NoiseSettings
+{
+	float numLayers;
+	float scale;
+	float frequency;
+	float frequencyMultiplier;
+	float amplitude;
+	float amplitudeMultiplier;
+	float3 offset;
+	float minValue;
+	float vShift;
+	float ridgeWeight;
+	float ridgeWeightMultiplier;
+	float useFirstLayerAsMask;
+};
+
+StructuredBuffer<NoiseSettings> noiseSettings;
+int noiseLayers;
+
+float SimpleNoise(NoiseSettings ns, float3 p)
+{
+	const int numLayers = ns.numLayers;
+	const float scale = ns.scale;
+	float frequency = ns.frequency;
+	const float freqMultiplier = ns.frequencyMultiplier;
+	float amplitude = ns.amplitude;
+	const float ampMultiplier = ns.amplitudeMultiplier;
+	const float3 offset = ns.offset;
+	const float minValue = ns.minValue;
+	const float vShift = ns.vShift;
+
+	float n = 0;
+
+	for( int i = 0 ; i < numLayers ; ++i )
+	{
+		float noise = snoise( ( p * frequency ) + offset );
+		n += ( noise + 1 ) * 0.5 * amplitude;
+
+		frequency *= freqMultiplier;
+		amplitude *= ampMultiplier;
+	}
+
+	n = max( 0, n - minValue );
+
+	return ( n * scale ) + vShift;
+}
+
+float RidgeNoise(NoiseSettings ns, float3 p)
+{
+	const int numLayers = ns.numLayers;
+	const float scale = ns.scale;
+	float frequency = ns.frequency;
+	const float freqMultiplier = ns.frequencyMultiplier;
+	float amplitude = ns.amplitude;
+	const float ampMultiplier = ns.amplitudeMultiplier;
+	const float3 offset = ns.offset;
+	const float minValue = ns.minValue;
+	float ridgeWeight = ns.ridgeWeight;
+	const float ridgeWeightMultiplier = ns.ridgeWeightMultiplier;
+	const float vShift = ns.vShift;
+
+	float n = 0;
+
+	for( int i = 0 ; i < numLayers ; ++i )
+	{
+		float noise = 1 - abs( snoise( ( p * frequency ) + offset ) );
+		noise *= noise;
+		noise *= ridgeWeight;
+		ridgeWeight = noise * ridgeWeightMultiplier;
+
+		n += noise * amplitude;
+
+		frequency *= freqMultiplier;
+		amplitude *= ampMultiplier;
+	}
+
+	n = max( 0, n - minValue );
+
+	return ( n * scale ) + vShift;
+}
+
+float calcNoise(float3 p)
+{
+	float firstLayer = 0;
+	float height = 0;
+	
+	
+	if( noiseLayers > 0 )
+	{
+		switch( noiseLayerType[0] )
+		{
+			case 1:
+				firstLayer += SimpleNoise( noiseSettings[0], p );
+				break;
+			case 2:
+				firstLayer += RidgeNoise( noiseSettings[0], p );
+				break;
+			default:
+				break;
+		}
+
+		height = firstLayer;
+	}
+	
+	for( int ns = 1 ; ns < noiseLayers ; ++ns )
+	{
+
+		const float mask = ( noiseSettings[ns].useFirstLayerAsMask > 0 ) ? firstLayer : 1;
+		
+		switch( noiseLayerType[ns] )
+		{
+			case 1:
+				height += SimpleNoise( noiseSettings[ns], p ) * mask;
+				break;
+			case 2:
+				height += RidgeNoise( noiseSettings[ns], p ) * mask;
+				break;
+			default:
+				break;
+		}
+	}
+	
+	return height;
+} 
+
+static float3 GetBetterPoint(float3 p)
+{
+	const float x2 = p.x * p.x;
+	const float y2 = p.y * p.y;
+	const float z2 = p.z * p.z;
+	const float x1 = p.x * sqrt( 1 - ( y2 + z2 ) / 2 + ( y2 * z2 ) / 3 );
+	const float y1 = p.y * sqrt( 1 - ( z2 + x2 ) / 2 + ( z2 * x2 ) / 3 );
+	const float z1 = p.z * sqrt( 1 - ( x2 + y2 ) / 2 + ( x2 * y2 ) / 3 );
+	return float3( x1, y1, z1 );
+}
+static float3 GetBetterPoint(float3 p, float resolution)
+{
+	const float3 v = float3(p.x, p.y, p.z) * 2.0 / resolution;
+	const float x2 = v.x * v.x;
+	const float y2 = v.y * v.y;
+	const float z2 = v.z * v.z;
+
+	const float x1 = v.x * sqrt(1.0 - y2 / 2.0 - z2 / 2.0 + y2 * z2 / 3.0);
+	const float y1 = v.y * sqrt(1.0 - z2 / 2.0 - x2 / 2.0 + z2 * x2 / 3.0);
+	const float z1 = v.z * sqrt(1.0 - x2 / 2.0 - y2 / 2.0 + x2 * y2 / 3.0);
+
+	return float3(x1, y1, z1);
+}
+
+float magnitude(float3 p)
+{
+	return p.x * p.x + p.y * p.y + p.z * p.z;
+}
+
+[numthreads( 512, 1, 1 )]
+void CSMain(uint id : SV_DispatchThreadID)
+{
+	// TODO: insert actual code here!
+	if( id >= numVertices )
+	{
+		return;
+	}
+	
+	// --- Spherification Calculations --- //
+	const float3 normalizedPosition = normalize( vertices[id] );
+	const float ofRad = dot( normalizedPosition, vertices[id] ) * radius;
+	const float3 shapePos1 = normalizedPosition * ofRad;
+	const float3 spherePos1 = normalizedPosition * radius;
+	float3 vertPos = lerp( shapePos1, spherePos1, sphere );
+	
+	if(isCube)
+	{
+
+		const float3 vPosition = vertices[id];
+		float3 finalPos2;
+		if (cubeSeg > 1) {
+			finalPos2 = GetBetterPoint(vPosition, cubeSeg);
+		}
+		else {
+			finalPos2 = GetBetterPoint(vPosition);
+		}
+
+		const float3 m = lerp( vPosition/ cubeSeg, normalize( lerp( vPosition, finalPos2, lerpSpread ) ), sphere);
+		vertPos = m * radius;
+		
+	}
+	
+
+	// --- Spherification Calculations --- //
+	
+	// --- HeightMap Calculations --- //
+	int dimX = 0;
+	int dimY = 0;
+	heightMap.GetDimensions( dimX, dimY );
+
+	const float2 uv = float2( ( uvs[id].x * dimX ) % dimX, ( uvs[id].y * dimY ) % dimY );
+	
+	const float h1 = heightMap[uv].r;
+	const float minh = -1.0894;
+	const float maxh = 0.7891;
+	const float resh = minh + ( maxh - minh ) * h1;
+	
+	const float3 col = normalizedPosition * resh * heightIntensity * int( useHeightMap );
+	// --- HeightMap Calculations --- //
+
+	// --- Noise Calculations --- //
+	//vertPos += normalizedPosition * calkNoise( vertPos );
+	// calculate noise here....
+	// ....
+	// ....
+	// calculation result * noiseIntensity;
+	const float3 noiseRes = normalizedPosition * calcNoise( vertPos + col ) * int( useNoise );
+	// --- Noise Calculations --- //
+
+	heights[id] = vertPos + col + noiseRes;
+
+	const float mag = magnitude( heights[id] );
+
+	minMax[0] = min( mag, minMax[0] );
+	minMax[1] = max( mag, minMax[1] );
+}

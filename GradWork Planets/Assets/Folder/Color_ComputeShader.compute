@@ -1,0 +1,116 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel CSMain
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> Result;
+
+StructuredBuffer<float3> vertices;
+StructuredBuffer<float2> uvs;
+StructuredBuffer<float> minMax;
+
+
+uint numVertices;
+
+float pxOffset;
+float resolution;
+float radius;
+float lerpValue;
+
+float waterMax;
+float grassLine;
+float mountainLine;
+float snowLine;
+
+float magnitude(float3 p)
+{
+	return  p.x * p.x + p.y * p.y + p.z * p.z;
+}
+
+[numthreads( 32, 32, 1 )]
+void CSMain(uint2 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+	const uint idx = id.x + id.y;// +id.z;
+	if( idx >= numVertices )
+	{
+		return;
+	}
+	
+	const float mag = magnitude( vertices[idx] ) * 10;
+	float4 col = ( float4 )0;
+	col.a = 1;
+	//col.r = 1;
+	//const float mmax = ( minMax[1]-minMax[0])/2;
+	const float waterline = radius * radius * 10 + waterMax;
+	// snowLine = 82
+	if (mag > snowLine)
+	{
+		// snow
+		col.r = 0.60;
+		col.g = 0.60;
+		col.b = 0.7;
+	}
+	else if( mag > mountainLine)
+	{
+		// mountainLine = 75.25
+		// mountain
+		col.r = 0.45;
+		col.g = 0.32;
+		col.b = 0.34;
+	}
+	else if( mag > grassLine)
+	{	
+		// grassLine = 72.9
+		//grass
+		col.r = 0.07;
+		col.g = 0.3;
+		col.b = 0.09;
+	}
+	else if (mag > waterline)
+	{
+		// waterLine = rad + 0.125 (roughly, not actually)
+		// water
+		col.r = 0.56;
+		col.g = 0.47;
+		col.b = 0.24;
+	}
+	else
+	{
+		col.r = 0.06;
+		col.g = 0.07;
+		col.b = 0.30;
+	}
+	
+	
+	//value 256
+	//value2 73.3
+	const float res = resolution;
+	const float pixelSize = pxOffset;
+	
+	const float2 coord = (uvs[idx] * res) % res;
+	
+	const float2 c1 = coord - float2( pixelSize, pixelSize );
+	const float2 c2 = coord - float2( 0, pixelSize );
+	const float2 c3 = coord + float2( pixelSize, -pixelSize );
+	const float2 c4 = coord - float2( pixelSize, 0 );
+	const float2 c5 = coord;
+	const float2 c6 = coord + float2( pixelSize, 0);
+	const float2 c7 = coord + float2( -pixelSize, pixelSize );
+	const float2 c8 = coord + float2( 0, pixelSize );
+	const float2 c9 = coord + float2( pixelSize, pixelSize );
+	
+
+	
+	Result[c1] = lerp(Result[c1], col, lerpValue);
+	Result[c2] = lerp(Result[c2], col, lerpValue);
+	Result[c3] = lerp(Result[c3], col, lerpValue);
+	//							  col	 2
+	Result[c4] = lerp(Result[c4], col, lerpValue);
+	Result[c5] = lerp(Result[c5], col, lerpValue);
+	Result[c6] = lerp(Result[c6], col, lerpValue);
+	//							  col	 2
+	Result[c7] = lerp(Result[c7], col, lerpValue);
+	Result[c8] = lerp(Result[c8], col, lerpValue);
+	Result[c9] = lerp(Result[c9], col, lerpValue);
+}
